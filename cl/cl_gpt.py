@@ -88,21 +88,37 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(num_heads * head_size, n_emb)
 
     def forward(self, x):
-        return torch.cat([head(x) for head in self.heads], dim = -1)
+        out = torch.cat([head(x) for head in self.heads], dim = -1)
+        out = self.proj(out)
+        return out
 
 
 class FeedForward(nn.Module):
     def __init__(self, n_emb):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_emb, n_emb),
-            nn.ReLU()
+            nn.Linear(n_emb, n_emb * 4),
+            nn.ReLU(),
+            nn.Linear(n_emb * 4, n_emb),
         )
 
     def forward(self, x):
         return self.net(x)
+
+class Block(nn.Module):
+    def __init__(self, n_head, n_embd):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa_head = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedForward(n_embd)
+    
+    def forward(self, a):
+        a = a + self.sa_head(a)
+        a = a + self.ffwd(a)
+        return a
 
 
 class BigramLanguageModel(nn.Module):
@@ -110,9 +126,16 @@ class BigramLanguageModel(nn.Module):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_emb)
         self.position_embedding_table = nn.Embedding(block_size, n_emb)
+        # single head
         # self.sa_head = Head(n_emb)
-        self.sa_head = MultiHeadAttention(4, n_emb // 4)
-        self.ffwd = FeedForward(n_emb)
+        # 
+        # one block
+        # self.sa_head = MultiHeadAttention(4, n_emb // 4)
+        # self.ffwd = FeedForward(n_emb)
+        self.blocks = nn.Sequential(
+            Block(4, n_emb), 
+            Block(4, n_emb), 
+            Block(4, n_emb))
         self.lm_head = nn.Linear(n_emb, vocab_size)
     
     def forward(self, idx, targets=None):
@@ -120,8 +143,10 @@ class BigramLanguageModel(nn.Module):
         token_emb = self.token_embedding_table(idx) # B, T
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # B, T
         emb = token_emb + pos_emb
-        a = self.sa_head(emb)
-        a = self.ffwd(a)
+        a = self.blocks(emb)
+        # one block
+        # a = self.sa_head(emb)
+        # a = self.ffwd(a)
         logits = self.lm_head(a)
         if targets == None:
             loss = None
@@ -149,7 +174,7 @@ m = BigramLanguageModel(vocab_size).to(device)
 optimizer = torch.optim.AdamW(m.parameters(), lr = learning_rate)
 
 for i in range(max_iters):
-    if i % eval_interval == 0:
+    if i % eval_interval == 0 or i == max_iters - 1:
         train_loss, val_loss = estimate_loss()
         print(f'Iter {i}, train_loss = {train_loss}, val_loss = {val_loss}')
     xb, yb = get_batch('train')
