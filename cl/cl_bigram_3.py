@@ -69,11 +69,10 @@ class BigramLanguageModel(nn.Module):
         if yb == None:
             loss = None
         else:
-            xb_emb = self.token_emb_table(xb)
-            B, T, C = xb_emb.shape
-            xb_emb = xb_emb.view(B * T, C)
+            B, T, C = logits.shape
+            logits = logits.view(B * T, C)
             yb = yb.view(B * T)
-            loss = F.cross_entropy(xb_emb, yb)
+            loss = F.cross_entropy(logits, yb)
         return logits, loss
 
     def generate(self, xb, max_token_num):
@@ -94,7 +93,7 @@ m = BigramLanguageModel(vocab_size).to(device)
 
 optimizer = torch.optim.AdamW(m.parameters(), lr = learning_rate)
 for i in range(max_iters):
-    if i % eval_interval == 0 or i == max_iters - 1:
+    if i % eval_interval == 0:
         # estimate_loss will affect random because it calls get_batch which randomly creates batch
         train_loss, val_loss = estimate_loss(m)
         print(f'iter {i}: train_loss = {train_loss}, val_loss = {val_loss}')
