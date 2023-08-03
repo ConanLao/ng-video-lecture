@@ -70,23 +70,33 @@ class Head(nn.Module):
 
     def forward(self, xb_emb):
         B, T, C = xb_emb.shape
-        k = self.key(xb_emb)
-        q = self.query(xb_emb)
-        wei = q @ k.transpose(-2, -1) * C ** -0.5
+        k = self.key(xb_emb) # B, T, head_size
+        q = self.query(xb_emb) # B, T, head_size
+        wei = q @ k.transpose(-2, -1) * C ** -0.5 # B, T, T
         # dont forget [ : T, : T]; Weight matrix size should be same as the actual block size, which may vary during generation
         wei = wei.masked_fill(self.tril[ : T, : T] == 0, float('-inf'))
-        wei = F.softmax(wei, dim=-1)
-        v = self.value(xb_emb)
-        out = wei @ v
+        wei = F.softmax(wei, dim=-1) 
+        v = self.value(xb_emb) # B, T, head_size
+        out = wei @ v # T, T @ B, T, head_size -> B, T, head_size
         return out
 
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_head, head_size):
+        super().__init__()
+        # can't use a normal List
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(n_head)])
+
+    def forward(self, xb):
+        return torch.cat([head(xb) for head in self.heads], dim = -1)
 
 class BigramLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_emb_table = nn.Embedding(vocab_size, n_emb)
         self.pos_emb_table = nn.Embedding(block_size, n_emb)
-        self.sa_head = Head(n_emb)
+        # self.sa_head = Head(n_emb)
+        self.sa_heads = MultiHeadAttention(4, n_emb // 4)
         self.lm_head = nn.Linear(n_emb, vocab_size)
 
     def forward(self, xb, yb = None):
@@ -94,7 +104,7 @@ class BigramLanguageModel(nn.Module):
         tok_emb = self.token_emb_table(xb)
         pos_emb = self.pos_emb_table(torch.arange(T))
         emb = tok_emb + pos_emb
-        a = self.sa_head(emb)
+        a = self.sa_heads(emb)
         logits = self.lm_head(a)
         if yb == None:
             loss = None
@@ -105,14 +115,31 @@ class BigramLanguageModel(nn.Module):
             loss = F.cross_entropy(logits, yb)
         return logits, loss
 
-    def generate(self, xb, max_token_num):
-        for _ in range(max_token_num):
-            B, T = xb.shape
-            logits, _ = self(xb[:, -block_size:])
-            probs = F.softmax(logits[:, -1, :], dim = -1)
-            preds = torch.multinomial(probs, num_samples = 1)
-            xb = torch.cat((xb, preds), dim = 1)
-        return xb
+    # def generate(self, xb, max_token_num):
+    #     for _ in range(max_token_num):
+    #         B, T = xb.shape
+    #         logits, _ = self(xb[:, -block_size:])
+    #         probs = F.softmax(logits[:, -1, :], dim = -1)
+    #         preds = torch.multinomial(probs, num_samples = 1)
+    #         xb = torch.cat((xb, preds), dim = 1)
+    #     return xb
+
+    def generate(self, idx, max_new_tokens):
+        # idx is (B, T) array of indices in the current context
+        for _ in range(max_new_tokens):
+            # crop idx to the last block_size tokens
+            idx_cond = idx[:, -block_size:]
+            # get the predictions
+            logits, loss = self(idx_cond)
+            # focus only on the last time step
+            logits = logits[:, -1, :] # becomes (B, C)
+            # apply softmax to get probabilities
+            probs = F.softmax(logits, dim=-1) # (B, C)
+            # sample from the distribution
+            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+            # append sampled index to the running sequence
+            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+        return idx
     
 
 m = BigramLanguageModel().to(device)
@@ -135,5 +162,5 @@ for i in range(max_iters):
     optimizer.step()
 
 
-res = decode(m.generate(torch.zeros((1, 1), dtype =torch.long, device=device), max_token_num = 500)[0].tolist())
+res = decode(m.generate(torch.zeros((1, 1), dtype =torch.long, device=device), 500)[0].tolist())
 print(res)
