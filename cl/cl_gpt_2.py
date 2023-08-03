@@ -126,7 +126,7 @@ class Block(nn.Module):
         xb = xb + self.ffwd(self.ln2(xb))
         return xb
 
-class BigramLanguageModel(nn.Module):
+class GPTLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_emb_table = nn.Embedding(vocab_size, n_emb)
@@ -137,6 +137,16 @@ class BigramLanguageModel(nn.Module):
         self.blocks = nn.Sequential(*[Block(n_emb, n_head=n_head) for _ in range(n_layer)])
         self.ln = nn.LayerNorm(n_emb)
         self.lm_head = nn.Linear(n_emb, vocab_size)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, xb, yb = None):
         B, T = xb.shape
@@ -163,9 +173,10 @@ class BigramLanguageModel(nn.Module):
             preds = torch.multinomial(probs, num_samples = 1)
             xb = torch.cat((xb, preds), dim = 1)
         return xb
-    
 
-m = BigramLanguageModel().to(device)
+
+m = GPTLanguageModel().to(device)
+print(f'total num of params = {sum(p.numel() for p in m.parameters())/1e6}M')
 
 # xb, yb = get_batch('train')
 # print(f'xb = {xb}')
