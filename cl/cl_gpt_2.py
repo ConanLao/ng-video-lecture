@@ -64,11 +64,15 @@ class BigramLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_emb_table = nn.Embedding(vocab_size, n_emb)
+        self.pos_emb_table = nn.Embedding(block_size, n_emb)
         self.lm_head = nn.Linear(n_emb, vocab_size)
 
     def forward(self, xb, yb = None):
+        B, T = xb.shape
         tok_emb = self.token_emb_table(xb)
-        logits = self.lm_head(tok_emb)
+        pos_emb = self.pos_emb_table(torch.arange(T))
+        emb = tok_emb + pos_emb
+        logits = self.lm_head(emb)
         if yb == None:
             loss = None
         else:
@@ -80,7 +84,8 @@ class BigramLanguageModel(nn.Module):
 
     def generate(self, xb, max_token_num):
         for _ in range(max_token_num):
-            logits, _ = self(xb)
+            B, T = xb.shape
+            logits, _ = self(xb[:, -block_size:])
             probs = F.softmax(logits[:, -1, :], dim = -1)
             preds = torch.multinomial(probs, num_samples = 1)
             xb = torch.cat((xb, preds), dim = 1)
