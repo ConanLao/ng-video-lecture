@@ -11,6 +11,9 @@ learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_emb = 32
+n_head = 4
+n_layer = 3
+dropout = 0.2
 # ------------
 
 torch.manual_seed(1337)
@@ -66,6 +69,7 @@ class Head(nn.Module):
         self.key = nn.Linear(n_emb, head_size, bias=False)
         self.query = nn.Linear(n_emb, head_size, bias=False)
         self.value = nn.Linear(n_emb, head_size, bias=False)
+        self.dropout = nn.Dropout(dropout)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
     def forward(self, xb_emb):
@@ -75,7 +79,8 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * C ** -0.5 # B, T, T
         # dont forget [ : T, : T]; Weight matrix size should be same as the actual block size, which may vary during generation
         wei = wei.masked_fill(self.tril[ : T, : T] == 0, float('-inf'))
-        wei = F.softmax(wei, dim=-1) 
+        wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
         v = self.value(xb_emb) # B, T, head_size
         out = wei @ v # T, T @ B, T, head_size -> B, T, head_size
         return out
@@ -87,10 +92,12 @@ class MultiHeadAttention(nn.Module):
         # can't use a normal List
         self.heads = nn.ModuleList([Head(head_size) for _ in range(n_head)])
         self.proj = nn.Linear(head_size * n_head, n_emb)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, xb):
         out = torch.cat([head(xb) for head in self.heads], dim = -1)
         out = self.proj(out)
+        out = self.dropout(out)
         return out
 
 class FeedForward(nn.Module):
@@ -99,7 +106,8 @@ class FeedForward(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(n_emb, n_emb * 4),
             nn.ReLU(),
-            nn.Linear(n_emb * 4, n_emb)
+            nn.Linear(n_emb * 4, n_emb),
+            nn.Dropout(dropout)
         )
     
     def forward(self, xb):
@@ -126,12 +134,8 @@ class BigramLanguageModel(nn.Module):
         # self.sa_head = Head(n_emb)
         # self.sa_heads = MultiHeadAttention(4, n_emb // 4)
         # self.ffwd = FeedForward(n_emb)
-        self.blocks = nn.Sequential(
-            Block(n_emb, n_head=4),
-            Block(n_emb, n_head=4),
-            Block(n_emb, n_head=4),
-            nn.LayerNorm(n_emb)
-        )
+        self.blocks = nn.Sequential(*[Block(n_emb, n_head=n_head) for _ in range(n_layer)])
+        self.ln = nn.LayerNorm(n_emb)
         self.lm_head = nn.Linear(n_emb, vocab_size)
 
     def forward(self, xb, yb = None):
@@ -140,6 +144,7 @@ class BigramLanguageModel(nn.Module):
         pos_emb = self.pos_emb_table(torch.arange(T))
         emb = tok_emb + pos_emb
         a = self.blocks(emb)
+        a = self.ln(a)
         logits = self.lm_head(a)
         if yb == None:
             loss = None
