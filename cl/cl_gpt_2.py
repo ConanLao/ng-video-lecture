@@ -86,20 +86,35 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         # can't use a normal List
         self.heads = nn.ModuleList([Head(head_size) for _ in range(n_head)])
+        self.proj = nn.Linear(head_size * n_head, n_emb)
 
     def forward(self, xb):
-        return torch.cat([head(xb) for head in self.heads], dim = -1)
+        out = torch.cat([head(xb) for head in self.heads], dim = -1)
+        out = self.proj(out)
+        return out
 
 class FeedForward(nn.Module):
     def __init__(self, n_emb):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_emb, n_emb),
+            nn.Linear(n_emb, n_emb * 4),
             nn.ReLU(),
+            nn.Linear(n_emb * 4, n_emb)
         )
     
     def forward(self, xb):
         return self.net(xb)
+    
+class Block(nn.Module):
+    def __init__(self, n_emb, n_head):
+        super().__init__()
+        self.sa_heads = MultiHeadAttention(n_head, n_emb // n_head)
+        self.ffwd = FeedForward(n_emb)
+
+    def forward(self, xb):
+        xb = xb + self.sa_heads(xb)
+        xb = xb + self.ffwd(xb)
+        return xb
 
 class BigramLanguageModel(nn.Module):
     def __init__(self):
@@ -107,8 +122,13 @@ class BigramLanguageModel(nn.Module):
         self.token_emb_table = nn.Embedding(vocab_size, n_emb)
         self.pos_emb_table = nn.Embedding(block_size, n_emb)
         # self.sa_head = Head(n_emb)
-        self.sa_heads = MultiHeadAttention(4, n_emb // 4)
-        self.ffwd = FeedForward(n_emb)
+        # self.sa_heads = MultiHeadAttention(4, n_emb // 4)
+        # self.ffwd = FeedForward(n_emb)
+        self.blocks = nn.Sequential(
+            Block(n_emb, n_head=4),
+            Block(n_emb, n_head=4),
+            Block(n_emb, n_head=4),
+        )
         self.lm_head = nn.Linear(n_emb, vocab_size)
 
     def forward(self, xb, yb = None):
@@ -116,8 +136,7 @@ class BigramLanguageModel(nn.Module):
         tok_emb = self.token_emb_table(xb)
         pos_emb = self.pos_emb_table(torch.arange(T))
         emb = tok_emb + pos_emb
-        a = self.sa_heads(emb)
-        a = self.ffwd(a)
+        a = self.blocks(emb)
         logits = self.lm_head(a)
         if yb == None:
             loss = None
@@ -128,31 +147,14 @@ class BigramLanguageModel(nn.Module):
             loss = F.cross_entropy(logits, yb)
         return logits, loss
 
-    # def generate(self, xb, max_token_num):
-    #     for _ in range(max_token_num):
-    #         B, T = xb.shape
-    #         logits, _ = self(xb[:, -block_size:])
-    #         probs = F.softmax(logits[:, -1, :], dim = -1)
-    #         preds = torch.multinomial(probs, num_samples = 1)
-    #         xb = torch.cat((xb, preds), dim = 1)
-    #     return xb
-
-    def generate(self, idx, max_new_tokens):
-        # idx is (B, T) array of indices in the current context
-        for _ in range(max_new_tokens):
-            # crop idx to the last block_size tokens
-            idx_cond = idx[:, -block_size:]
-            # get the predictions
-            logits, loss = self(idx_cond)
-            # focus only on the last time step
-            logits = logits[:, -1, :] # becomes (B, C)
-            # apply softmax to get probabilities
-            probs = F.softmax(logits, dim=-1) # (B, C)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
-            # append sampled index to the running sequence
-            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
-        return idx
+    def generate(self, xb, max_token_num):
+        for _ in range(max_token_num):
+            B, T = xb.shape
+            logits, _ = self(xb[:, -block_size:])
+            probs = F.softmax(logits[:, -1, :], dim = -1)
+            preds = torch.multinomial(probs, num_samples = 1)
+            xb = torch.cat((xb, preds), dim = 1)
+        return xb
     
 
 m = BigramLanguageModel().to(device)
@@ -164,7 +166,7 @@ m = BigramLanguageModel().to(device)
 
 optimizer = torch.optim.AdamW(m.parameters(), lr = learning_rate)
 for i in range(max_iters):
-    if i % eval_interval == 0:
+    if i % eval_interval == 0 or i == max_iters - 1:
         # estimate_loss will affect random because it calls get_batch which randomly creates batch
         train_loss, val_loss = estimate_loss(m)
         print(f'iter {i}: train_loss = {train_loss}, val_loss = {val_loss}')
