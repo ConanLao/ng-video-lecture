@@ -5,9 +5,9 @@ from torch.nn import functional as F
 # hyperparameters
 batch_size = 32 # how many independent sequences will we process in parallel?
 block_size = 8 # what is the maximum context length for predictions?
-max_iters = 3000
-eval_interval = 300
-learning_rate = 1e-2
+max_iters = 5000
+eval_interval = 500
+learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_emb = 32
@@ -60,11 +60,33 @@ def estimate_loss(m):
 # print(f'xb = {xb}')
 # print(f'yb = {yb}')
 
+class Head(nn.Module):
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_emb, head_size, bias=False)
+        self.query = nn.Linear(n_emb, head_size, bias=False)
+        self.value = nn.Linear(n_emb, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, xb_emb):
+        B, T, C = xb_emb.shape
+        k = self.key(xb_emb)
+        q = self.query(xb_emb)
+        wei = q @ k.transpose(-2, -1) * C ** -0.5
+        # dont forget [ : T, : T]; Weight matrix size should be same as the actual block size, which may vary during generation
+        wei = wei.masked_fill(self.tril[ : T, : T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        v = self.value(xb_emb)
+        out = wei @ v
+        return out
+
+
 class BigramLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_emb_table = nn.Embedding(vocab_size, n_emb)
         self.pos_emb_table = nn.Embedding(block_size, n_emb)
+        self.sa_head = Head(n_emb)
         self.lm_head = nn.Linear(n_emb, vocab_size)
 
     def forward(self, xb, yb = None):
@@ -72,7 +94,8 @@ class BigramLanguageModel(nn.Module):
         tok_emb = self.token_emb_table(xb)
         pos_emb = self.pos_emb_table(torch.arange(T))
         emb = tok_emb + pos_emb
-        logits = self.lm_head(emb)
+        a = self.sa_head(emb)
+        logits = self.lm_head(a)
         if yb == None:
             loss = None
         else:
