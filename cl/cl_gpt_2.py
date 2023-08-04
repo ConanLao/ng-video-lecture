@@ -76,7 +76,8 @@ class Head(nn.Module):
         B, T, C = xb_emb.shape
         k = self.key(xb_emb) # B, T, head_size
         q = self.query(xb_emb) # B, T, head_size
-        wei = q @ k.transpose(-2, -1) * C ** -0.5 # B, T, T
+        # not C; it's k.shape[-1]
+        wei = q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5 # B, T, T
         # dont forget [ : T, : T]; Weight matrix size should be same as the actual block size, which may vary during generation
         wei = wei.masked_fill(self.tril[ : T, : T] == 0, float('-inf'))
         wei = F.softmax(wei, dim=-1)
